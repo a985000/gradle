@@ -24,12 +24,12 @@ import org.junit.Rule
 
 import java.util.concurrent.atomic.AtomicInteger
 
-class DefaultTransformerExecutionHistoryRepositoryTest extends ConcurrentSpec {
+class DefaultCachingTransformationWorkspaceProviderTest extends ConcurrentSpec {
     @Rule
     TestNameTestDirectoryProvider tmpDir = new TestNameTestDirectoryProvider()
 
     def executionHistoryStore = Mock(ExecutionHistoryStore)
-    private historyRepository = new DefaultTransformerExecutionHistoryRepository(new WorkspaceProvider(), executionHistoryStore) {}
+    private workspaceProvider = new DefaultCachingTransformationWorkspaceProvider(new WorkspaceProvider(executionHistoryStore)) {}
 
     def "locks on transformer identity"() {
         def numberOfCalls = new AtomicInteger()
@@ -38,7 +38,7 @@ class DefaultTransformerExecutionHistoryRepositoryTest extends ConcurrentSpec {
         async {
             100.times {
                 start {
-                    this.historyRepository.withWorkspace(new TestIdentity("id")) { id, workspace ->
+                    this.workspaceProvider.withWorkspace(new TestIdentity("id")) { id, workspace ->
                         if (numberOfCalls.getAndIncrement() != 0) {
                             throw new IllegalStateException("Use workspace called concurrently")
                         }
@@ -56,14 +56,14 @@ class DefaultTransformerExecutionHistoryRepositoryTest extends ConcurrentSpec {
         when:
         async {
             start {
-                historyRepository.withWorkspace(new TestIdentity("first")) { id, workspace ->
+                workspaceProvider.withWorkspace(new TestIdentity("first")) { id, workspace ->
                     instant.first
                     thread.blockUntil.go
                     return ImmutableList.of()
                 }
             }
             start {
-                historyRepository.withWorkspace(new TestIdentity("second")) { id, workspace ->
+                workspaceProvider.withWorkspace(new TestIdentity("second")) { id, workspace ->
                     instant.second
                     thread.blockUntil.go
                     return ImmutableList.of()
@@ -82,22 +82,33 @@ class DefaultTransformerExecutionHistoryRepositoryTest extends ConcurrentSpec {
     
     def "has cached result works as expected"() {
         expect:
-        !historyRepository.hasCachedResult(new TestIdentity("first"))
+        !workspaceProvider.hasCachedResult(new TestIdentity("first"))
 
         when:
-        historyRepository.withWorkspace(new TestIdentity("first")) { id, workspace ->
+        workspaceProvider.withWorkspace(new TestIdentity("first")) { id, workspace ->
             return ImmutableList.of()
         }
         then:
-        historyRepository.hasCachedResult(new TestIdentity("first"))
-        !historyRepository.hasCachedResult(new TestIdentity("second"))
+        workspaceProvider.hasCachedResult(new TestIdentity("first"))
+        !workspaceProvider.hasCachedResult(new TestIdentity("second"))
     }
 
-    private class WorkspaceProvider implements TransformerWorkspaceProvider {
+    private static class WorkspaceProvider implements TransformationWorkspaceProvider {
+
+        private final ExecutionHistoryStore executionHistoryStore
+
+        WorkspaceProvider(ExecutionHistoryStore executionHistoryStore) {
+            this.executionHistoryStore = executionHistoryStore
+        }
 
         @Override
         ImmutableList<File> withWorkspace(TransformationIdentity identity, TransformationWorkspaceAction workspaceAction) {
             return workspaceAction.useWorkspace(identity.identity, new DefaultTransformationWorkspace(tmpDir.file(identity)))
+        }
+
+        @Override
+        ExecutionHistoryStore getExecutionHistoryStore() {
+            return executionHistoryStore
         }
     }
 
